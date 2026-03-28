@@ -16,17 +16,51 @@ const {
 } = require("@discordjs/voice");
 
 // =========================
-// ENV
+// ENV OKUMA
 // =========================
-const TOKEN = process.env.TOKEN;
-const GUILD_ID = process.env.GUILD_ID;
-const VOICE_CHANNEL_ID = process.env.VOICE_CHANNEL_ID;
-const WELCOME_CHANNEL_ID = process.env.WELCOME_CHANNEL_ID;
-const DELETE_AFTER_MS = Number(process.env.DELETE_AFTER_MS || 5000);
-const PORT = Number(process.env.PORT || 3000);
+function cleanEnv(value) {
+  if (typeof value !== "string") return "";
+  return value.replace(/\r?\n|\r/g, "").trim();
+}
+
+const TOKEN = cleanEnv(process.env.TOKEN);
+const GUILD_ID = cleanEnv(process.env.GUILD_ID);
+const VOICE_CHANNEL_ID = cleanEnv(process.env.VOICE_CHANNEL_ID);
+const WELCOME_CHANNEL_ID = cleanEnv(process.env.WELCOME_CHANNEL_ID);
+const DELETE_AFTER_MS = Number(cleanEnv(process.env.DELETE_AFTER_MS) || 5000);
+const PORT = Number(cleanEnv(process.env.PORT) || 8080);
 
 // =========================
-// Basit web server (Railway)
+// ENV KONTROL
+// =========================
+console.log("TOKEN var mı:", TOKEN ? "evet" : "hayır");
+console.log("TOKEN uzunluğu:", TOKEN ? TOKEN.length : 0);
+console.log("GUILD_ID:", GUILD_ID || "yok");
+console.log("VOICE_CHANNEL_ID:", VOICE_CHANNEL_ID || "yok");
+console.log("WELCOME_CHANNEL_ID:", WELCOME_CHANNEL_ID || "yok");
+
+if (!TOKEN) {
+  console.error("HATA: TOKEN bulunamadı veya boş.");
+  process.exit(1);
+}
+
+if (!GUILD_ID) {
+  console.error("HATA: GUILD_ID bulunamadı.");
+  process.exit(1);
+}
+
+if (!VOICE_CHANNEL_ID) {
+  console.error("HATA: VOICE_CHANNEL_ID bulunamadı.");
+  process.exit(1);
+}
+
+if (!WELCOME_CHANNEL_ID) {
+  console.error("HATA: WELCOME_CHANNEL_ID bulunamadı.");
+  process.exit(1);
+}
+
+// =========================
+// EXPRESS
 // =========================
 const app = express();
 
@@ -39,17 +73,21 @@ app.listen(PORT, () => {
 });
 
 // =========================
-// Discord Client
+// DISCORD CLIENT
 // =========================
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
-    GatewayIntentBits.GuildMembers
-  ]
+    GatewayIntentBits.GuildMembers,
+    GatewayIntentBits.GuildVoiceStates,
+  ],
 });
 
 let reconnecting = false;
 
+// =========================
+// SES KANALINA BAĞLAN
+// =========================
 async function connectToVoice() {
   try {
     const guild = await client.guilds.fetch(GUILD_ID).catch(() => null);
@@ -69,21 +107,22 @@ async function connectToVoice() {
       return;
     }
 
-    const existing = getVoiceConnection(guild.id);
-    if (existing && existing.joinConfig.channelId === channel.id) {
+    let connection = getVoiceConnection(guild.id);
+
+    if (connection && connection.joinConfig.channelId === channel.id) {
       console.log("Bot zaten hedef ses kanalında.");
       return;
     }
 
-    if (existing) {
+    if (connection) {
       try {
-        existing.destroy();
+        connection.destroy();
       } catch (err) {
         console.log("Eski bağlantı kapatılamadı:", err.message);
       }
     }
 
-    const connection = joinVoiceChannel({
+    connection = joinVoiceChannel({
       channelId: channel.id,
       guildId: guild.id,
       adapterCreator: guild.voiceAdapterCreator,
@@ -106,10 +145,9 @@ async function connectToVoice() {
 
       try {
         await Promise.race([
-          entersState(connection, VoiceConnectionStatus.Signalling, 5_000),
-          entersState(connection, VoiceConnectionStatus.Connecting, 5_000),
+          entersState(connection, VoiceConnectionStatus.Signalling, 5000),
+          entersState(connection, VoiceConnectionStatus.Connecting, 5000),
         ]);
-
         reconnecting = false;
       } catch {
         try {
@@ -130,6 +168,9 @@ async function connectToVoice() {
   }
 }
 
+// =========================
+// HOŞ GELDİN MESAJI
+// =========================
 async function sendTempWelcome(member) {
   try {
     const channel = await member.guild.channels.fetch(WELCOME_CHANNEL_ID).catch(() => null);
@@ -144,7 +185,7 @@ async function sendTempWelcome(member) {
       return;
     }
 
-    const msg = await channel.send(`Hoş geldin **${member.user.username}**`);
+    const msg = await channel.send(`Hoş geldin ${member}`);
 
     setTimeout(async () => {
       try {
@@ -158,21 +199,28 @@ async function sendTempWelcome(member) {
   }
 }
 
+// =========================
+// BOT HAZIR
+// =========================
 client.once(Events.ClientReady, async (readyClient) => {
   console.log(`${readyClient.user.tag} aktif!`);
   await connectToVoice();
 });
 
+// =========================
+// SUNUCUYA YENİ ÜYE GİRİNCE
+// =========================
 client.on(Events.GuildMemberAdd, async (member) => {
   if (member.guild.id !== GUILD_ID) return;
   await sendTempWelcome(member);
 });
 
-// Bot herhangi bir nedenle sesten düşerse yeniden bağlanmayı dene
+// =========================
+// BOT Sesten düşerse tekrar bağlan
+// =========================
 client.on(Events.VoiceStateUpdate, async (oldState, newState) => {
   if (!client.user) return;
 
-  // Bot bir kanaldan düştüyse
   if (
     oldState.member &&
     oldState.member.id === client.user.id &&
@@ -186,4 +234,10 @@ client.on(Events.VoiceStateUpdate, async (oldState, newState) => {
   }
 });
 
-client.login(TOKEN);
+// =========================
+// LOGIN
+// =========================
+client.login(TOKEN).catch((err) => {
+  console.error("Discord login hatası:", err);
+  process.exit(1);
+});
